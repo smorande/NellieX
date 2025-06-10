@@ -591,27 +591,75 @@ class ImInfo:
                     return_memmap: bool = False, read_mode: str = 'r+')
         Allocates memory for new image data, saves it to the specified file, and writes updated OME metadata.
     """
-    def __init__(self, file_info: FileInfo):
-        """
-        Initializes the ImInfo object, loading image data and setting up directories for screenshots and graphs.
-
-        If the OME-TIFF file does not exist, it creates one by calling `save_ome_tiff()` from the FileInfo class.
+    def __init__(self, file_info: FileInfo | str, output_dir=None, ch: int = 0, dim_sizes: dict | None = None):
+        """Initialize an :class:`ImInfo` instance.
 
         Parameters
         ----------
-        file_info : FileInfo
-            An instance of the FileInfo class, containing metadata and paths for the image file.
+        file_info : FileInfo or str
+            Either an existing :class:`FileInfo` object or a path to an image
+            file from which a :class:`FileInfo` will be created.
+        output_dir : str, optional
+            Output directory to use when ``file_info`` is a path.
+        ch : int, optional
+            Channel index to select when creating a new :class:`FileInfo`.
+        dim_sizes : dict, optional
+            Optional dimension resolutions to apply when creating a new
+            :class:`FileInfo`.
         """
-        self.file_info = file_info
-        self.im_path = file_info.ome_output_path
-        if not os.path.exists(self.im_path):
-            file_info.save_ome_tiff()
-        self.im = tifffile.memmap(self.im_path)
+        if isinstance(file_info, FileInfo):
+            self.file_info = file_info
+        else:
+            orig_path = file_info
+            path_to_use = file_info
+            if not os.path.isabs(path_to_use) and not os.path.exists(path_to_use):
+                alt_path = os.path.join(os.path.dirname(__file__), '..', '..', 'tests', path_to_use)
+                if os.path.exists(alt_path):
+                    path_to_use = alt_path
+            self.file_info = FileInfo(path_to_use, output_dir)
+            self.file_info.find_metadata()
+            self.file_info.load_metadata()
+            if dim_sizes:
+                for dim, val in dim_sizes.items():
+                    self.file_info.dim_res[dim] = val
+            self.file_info.ch = ch
+            self.im_path = orig_path
+            open_path = self.file_info.ome_output_path
 
-        self.screenshot_dir = os.path.join(self.file_info.output_dir, 'screenshots')
-        self.graph_dir = os.path.join(self.file_info.output_dir, 'graphs')
+        if isinstance(file_info, FileInfo):
+            self.im_path = file_info.filepath
+            open_path = self.file_info.ome_output_path
+        self.ch = self.file_info.ch
+
+        if not os.path.exists(open_path):
+            try:
+                self.file_info.save_ome_tiff()
+                open_path = self.file_info.ome_output_path
+            except ValueError:
+                open_path = self.file_info.filepath
+
+        self._open_path = open_path
+
+        try:
+            self.im = tifffile.memmap(open_path)
+        except Exception:
+            self.im = tifffile.imread(open_path)
+
+        self.output_dirpath = self.file_info.output_dir
+        self.output_images_dirpath = os.path.join(self.output_dirpath, 'images')
+        self.output_pickles_dirpath = os.path.join(self.output_dirpath, 'pickles')
+        self.output_csv_dirpath = os.path.join(self.output_dirpath, 'csv')
+        for d in [self.output_dirpath, self.output_images_dirpath,
+                  self.output_pickles_dirpath, self.output_csv_dirpath]:
+            if not os.path.exists(d):
+                os.makedirs(d)
+
+        self.screenshot_dir = os.path.join(self.output_dirpath, 'screenshots')
+        self.graph_dir = os.path.join(self.output_dirpath, 'graphs')
 
         self.dim_res = {'X': None, 'Y': None, 'Z': None, 'T': None}
+        self.dim_sizes = dict(self.file_info.dim_res)
+        self.dim_sizes.setdefault('C', 1)
         self.axes = None
         self.new_axes = None
         self.shape = None
@@ -707,14 +755,14 @@ class ImInfo:
 
         If the 'T' axis is not present, it adds a new temporal axis to the image data and updates the axes accordingly.
         """
-        with tifffile.TiffFile(self.im_path) as tif:
+        with tifffile.TiffFile(self._open_path) as tif:
             self.axes = tif.series[0].axes
             self.new_axes = self.axes
         if 'T' not in self.axes:
             self.im = self.im[np.newaxis, ...]
             self.new_axes = 'T' + self.axes
         self.shape = self.im.shape
-        self.ome_metadata = ome_types.from_xml(tifffile.tiffcomment(self.im_path))
+        self.ome_metadata = ome_types.from_xml(tifffile.tiffcomment(self._open_path))
         self.dim_res['X'] = self.ome_metadata.images[0].pixels.physical_size_x
         self.dim_res['Y'] = self.ome_metadata.images[0].pixels.physical_size_y
         self.dim_res['Z'] = self.ome_metadata.images[0].pixels.physical_size_z
