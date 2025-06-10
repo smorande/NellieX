@@ -48,3 +48,5 @@ else:
         logger.warning('GPU packages not detected, running via CPU.')
         device_type = 'cpu'
 
+from nellie.im_info.verifier import FileInfo, ImInfo
+
